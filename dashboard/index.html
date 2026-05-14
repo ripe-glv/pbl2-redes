@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>PBL 2 Redes - Drones</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">Operacao distribuida</p>
+        <h1>Despacho de drones maritimos</h1>
+      </div>
+      <div class="status-pill" id="refreshStatus">Atualizando...</div>
+    </header>
+
+    <main>
+      <section class="toolbar" aria-label="Controles da simulacao">
+        <form id="requestForm" class="request-form">
+          <label>
+            Broker
+            <select id="brokerSelect" name="broker">
+              <option value="http://localhost:8001">Broker A</option>
+              <option value="http://localhost:8002">Broker B</option>
+              <option value="http://localhost:8003">Broker C</option>
+            </select>
+          </label>
+          <label>
+            Evento
+            <select id="eventType" name="event_type">
+              <option value="unknown_object">Objeto nao identificado</option>
+              <option value="route_blockage">Bloqueio de rota</option>
+              <option value="civil_vessel_adrift">Embarcacao a deriva</option>
+              <option value="urgent_visual_inspection">Inspecao visual urgente</option>
+              <option value="environmental_risk">Risco ambiental</option>
+            </select>
+          </label>
+          <label>
+            Criticidade
+            <input id="criticality" name="criticality" type="number" min="1" max="10" value="9" />
+          </label>
+          <button type="submit">Criar ocorrencia</button>
+        </form>
+      </section>
+
+      <section class="summary-grid" aria-label="Resumo">
+        <div class="metric">
+          <span>Brokers online</span>
+          <strong id="onlineBrokers">0/3</strong>
+        </div>
+        <div class="metric">
+          <span>Drones livres</span>
+          <strong id="idleDrones">0/3</strong>
+        </div>
+        <div class="metric">
+          <span>Em fila</span>
+          <strong id="queuedRequests">0</strong>
+        </div>
+        <div class="metric">
+          <span>Missoes concluidas</span>
+          <strong id="completedMissions">0</strong>
+        </div>
+      </section>
+
+      <section class="split">
+        <div>
+          <div class="section-head">
+            <h2>Setores</h2>
+            <button id="refreshButton" type="button">Atualizar</button>
+          </div>
+          <div id="brokers" class="grid"></div>
+        </div>
+        <div>
+          <div class="section-head">
+            <h2>Drones</h2>
+          </div>
+          <div id="drones" class="grid"></div>
+        </div>
+      </section>
+
+      <section>
+        <div class="section-head">
+          <h2>Ocorrencias recentes</h2>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>Origem</th>
+                <th>Tipo</th>
+                <th>Criticidade</th>
+                <th>Status</th>
+                <th>Drone</th>
+              </tr>
+            </thead>
+            <tbody id="requestsTable"></tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+
+    <template id="brokerTemplate">
+      <article class="panel">
+        <div class="panel-row">
+          <h3></h3>
+          <span class="badge"></span>
+        </div>
+        <dl></dl>
+      </article>
+    </template>
+
+    <template id="droneTemplate">
+      <article class="panel drone-panel">
+        <div class="panel-row">
+          <h3></h3>
+          <span class="badge"></span>
+        </div>
+        <div class="drone-visual" aria-hidden="true">
+          <span></span>
+        </div>
+        <dl></dl>
+      </article>
+    </template>
+
+    <script src="app.js"></script>
+  </body>
+</html>

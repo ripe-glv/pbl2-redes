@@ -1,0 +1,102 @@
+services:
+  broker-a:
+    build: .
+    command: ["python", "broker.py"]
+    environment:
+      BROKER_ID: broker-a
+      SECTOR_ID: north-route
+      PUBLIC_URL: http://broker-a:8000
+      PEERS: http://broker-b:8000,http://broker-c:8000
+      DRONES: http://drone-1:9000,http://drone-2:9000,http://drone-3:9000
+    ports:
+      - "8001:8000"
+
+  broker-b:
+    build: .
+    command: ["python", "broker.py"]
+    environment:
+      BROKER_ID: broker-b
+      SECTOR_ID: central-route
+      PUBLIC_URL: http://broker-b:8000
+      PEERS: http://broker-a:8000,http://broker-c:8000
+      DRONES: http://drone-1:9000,http://drone-2:9000,http://drone-3:9000
+    ports:
+      - "8002:8000"
+
+  broker-c:
+    build: .
+    command: ["python", "broker.py"]
+    environment:
+      BROKER_ID: broker-c
+      SECTOR_ID: south-route
+      PUBLIC_URL: http://broker-c:8000
+      PEERS: http://broker-a:8000,http://broker-b:8000
+      DRONES: http://drone-1:9000,http://drone-2:9000,http://drone-3:9000
+    ports:
+      - "8003:8000"
+
+  drone-1:
+    build: .
+    command: ["python", "drone.py"]
+    environment:
+      DRONE_ID: drone-1
+      FAIL_RATE: "0.10"
+    ports:
+      - "9001:9000"
+
+  drone-2:
+    build: .
+    command: ["python", "drone.py"]
+    environment:
+      DRONE_ID: drone-2
+      FAIL_RATE: "0.20"
+    ports:
+      - "9002:9000"
+
+  drone-3:
+    build: .
+    command: ["python", "drone.py"]
+    environment:
+      DRONE_ID: drone-3
+      FAIL_RATE: "0.15"
+    ports:
+      - "9003:9000"
+
+  sensor-a-1:
+    build: .
+    command: ["python", "sensor.py"]
+    environment:
+      SENSOR_ID: sensor-a-1
+      SECTOR_ID: north-route
+      BROKER_URL: http://broker-a:8000
+      INTERVAL_SECONDS: "2"
+    depends_on:
+      - broker-a
+
+  sensor-b-1:
+    build: .
+    command: ["python", "sensor.py"]
+    environment:
+      SENSOR_ID: sensor-b-1
+      SECTOR_ID: central-route
+      BROKER_URL: http://broker-b:8000
+      INTERVAL_SECONDS: "2.5"
+    depends_on:
+      - broker-b
+
+  sensor-c-1:
+    build: .
+    command: ["python", "sensor.py"]
+    environment:
+      SENSOR_ID: sensor-c-1
+      SECTOR_ID: south-route
+      BROKER_URL: http://broker-c:8000
+      INTERVAL_SECONDS: "3"
+    depends_on:
+      - broker-c
+
+  dashboard:
+    build: .
+    command: ["python", "-m", "http.server", "8080", "--directory", "/app/dashboard"]
+    ports:
+      - "8080:8080"
