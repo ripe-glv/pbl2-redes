@@ -26,8 +26,22 @@ Componentes:
 - `broker.py`: servidor da area. Mantem tabela de sensores, fila local de requisicoes e coordena claims de ocorrencias.
 - `sensor.py`: sensor autonomo. Gera eventos aleatorios e envia ao broker da sua area.
 - `drone.py`: drone autonomo. Aceita somente uma reserva por vez e executa a missao em uma thread.
-- `docker-compose.yml`: sobe cinco areas, cinco brokers, cinco sensores e tres bases de drones.
+- `docker-compose.yml`: sobe a topologia completa em um unico PC.
+- `docker-compose.cluster.yml`: sobe a topologia distribuida em 3 PCs usando os envs de `examples/pc-envs`.
+- `dashboard/`: interface tatico-operacional com grid de latitude/longitude, areas dos brokers, bases, drones e ocorrencias.
 - `tests/test_consistency.py`: teste automatizado de carga concorrente e nao-duplicidade de despacho.
+
+## Funcionamento da aplicacao
+
+1. Cada sensor gera eventos dentro da area quadrada do seu broker no mapa tatico.
+2. Eventos com severidade maior ou igual a `ALERT_THRESHOLD` viram requisicoes de drone.
+3. O broker de origem coloca a requisicao em sua fila de prioridade e replica uma copia para os demais brokers via `/enqueue-peer`.
+4. Todos os brokers podem tentar ajudar no despacho, mas antes precisam obter um claim no broker de origem via `/claim-request`.
+5. Com o claim concedido, o broker consulta `/status` de todas as bases em `DRONES`, filtra drones vivos e livres, calcula a distancia ate a latitude/longitude da ocorrencia e tenta reservar o drone disponivel mais proximo.
+6. O drone aceito executa a missao em uma thread e chama `/drone-result` no broker de origem ao concluir ou falhar.
+7. Se o drone cair ou nao responder, o broker detecta timeout por `MISSION_TIMEOUT_SECONDS`, recoloca a ocorrencia na fila e tenta novamente.
+
+O sistema nao depende de um servidor central unico: cada broker mantem sua propria fila, replica requisicoes entre pares e usa claims no broker de origem para impedir que a mesma ocorrencia seja despachada duas vezes.
 
 ## Como a concorrencia e tratada
 
@@ -44,6 +58,12 @@ Isso evita:
 
 A fila usa prioridade por criticidade e, em empate, ordem de criacao (`created_at_ms`). Assim, ocorrencias mais criticas saem primeiro e eventos de mesma criticidade preservam ordering por chegada.
 
+## Escolha do drone
+
+Antes de reservar uma missao, o broker consulta `/status` de todas as bases em `DRONES`. Ele considera disponivel somente o drone vivo, livre (`idle`) e com base operacional ou base de comando alternativa. Entre os drones disponiveis, o broker converte a latitude/longitude da ocorrencia para o mapa operacional e escolhe o drone mais proximo pela distancia euclidiana no grid tatico.
+
+Se dois brokers tentarem escolher o mesmo drone ao mesmo tempo, a reserva final ainda passa pelo lock local do drone em `/reserve`; se ele ja ficou ocupado, o broker tenta o proximo candidato disponivel por distancia.
+
 ## Confiabilidade e replanejamento
 
 O broker trabalha com timeouts e ACKs simples:
@@ -56,6 +76,85 @@ O broker trabalha com timeouts e ACKs simples:
 - cada despacho recebe um numero de `attempt`, entao callbacks atrasados de uma tentativa antiga sao rejeitados e nao sobrescrevem uma tentativa mais nova.
 
 Esse mecanismo cobre o caso de drone abatido, desconectado ou lento demais para responder.
+
+## Conexoes e desconexoes
+
+A aplicacao nao usa conexoes persistentes, sockets abertos ou sessao fixa entre os modulos. Toda comunicacao acontece por HTTP curto, do tipo requisicao/resposta. Por isso, quando algum modulo cai ou a rede falha, nao existe uma etapa explicita de "reconectar"; o sistema simplesmente tenta chamar o endpoint de novo em um ciclo futuro.
+
+As chamadas HTTP usam timeout curto no helper `http_json`. Quando a conexao falha, expira ou retorna erro, o chamador recebe status `0` ou um codigo HTTP de erro e decide o proximo passo.
+
+### Sensor para broker
+
+O sensor roda em loop:
+
+1. gera um evento;
+2. envia `POST /sensor` para `BROKER_URL`;
+3. aguarda a resposta;
+4. dorme `INTERVAL_SECONDS`;
+5. repete.
+
+Se o broker estiver fora do ar ou inacessivel, a chamada falha por timeout/conexao. O evento daquela rodada nao e armazenado em buffer pelo sensor, mas o sensor continua vivo e tenta enviar um novo evento no proximo ciclo. Quando o broker voltar, as proximas chamadas voltam a ser aceitas automaticamente.
+
+### Broker para broker
+
+Os brokers se comunicam pelos enderecos em `PEERS`.
+
+Quando uma ocorrencia critica nasce em um broker, ele envia copias para os pares com `POST /enqueue-peer`. Cada par que responder com HTTP 2xx recebeu a copia. Se algum peer estiver fora, apenas aquela chamada falha; os demais brokers continuam operando.
+
+Para evitar duplicidade, uma ocorrencia sempre tem um broker de origem (`origin_broker` e `origin_url`). Antes de qualquer broker despachar um drone para essa ocorrencia, ele precisa pedir permissao ao broker de origem com `POST /claim-request`. O broker de origem concede apenas um claim valido por vez. Se o broker ajudante nao conseguir reservar nenhum drone, ele chama `POST /release-claim` para devolver a ocorrencia a fila.
+
+Limite atual: se um peer estiver desconectado no momento da replicacao por `/enqueue-peer`, essa copia nao fica guardada para entrega posterior. O broker de origem continua dono da ocorrencia, mas aquele peer so recebera novas ocorrencias futuras.
+
+### Broker para drones
+
+O broker nao assume que conhece o estado real dos drones pela configuracao. Antes de despachar, ele consulta todos os enderecos em `DRONES` com `GET /status`.
+
+Um drone so entra na lista de candidatos se:
+
+- respondeu com sucesso;
+- `drone_alive` esta verdadeiro;
+- `status` e `idle`;
+- a base esta viva ou o drone possui uma base de comando alternativa.
+
+Depois disso, o broker calcula a distancia entre a latitude/longitude da ocorrencia e a posicao de cada drone no mapa tatico. A reserva e tentada primeiro no drone disponivel mais proximo, usando `POST /reserve`.
+
+Se um drone estiver desconectado, lento, destruido ou ocupado, ele e ignorado naquela rodada. Se nenhum drone puder ser reservado, o claim e liberado e a ocorrencia volta para a fila. Apos `RETRY_SECONDS`, o broker tenta novamente, refazendo as consultas de status. Assim, um drone que volta para a rede volta a ser considerado automaticamente.
+
+### Drone para broker
+
+Quando um drone aceita uma reserva, ele executa a missao em uma thread local. Ao final, envia o resultado para o callback recebido na reserva:
+
+```text
+POST {callback_url}
+```
+
+Na pratica, esse callback aponta para `/drone-result` no broker de origem da ocorrencia.
+
+Se o drone nao conseguir chamar o broker de origem, o callback pode se perder. Para cobrir esse caso, o broker de origem guarda `mission_deadline_ms`. Se o prazo definido por `MISSION_TIMEOUT_SECONDS` passar sem resultado, o broker marca a tentativa como `timeout`, remove a atribuicao do drone e recoloca a ocorrencia na fila.
+
+Cada reserva tambem possui um numero `attempt`. Se um callback antigo chegar depois de uma nova tentativa ja ter sido criada, o broker rejeita o resultado como `stale_attempt`. Isso impede que uma resposta atrasada sobrescreva o estado mais novo da ocorrencia.
+
+### Dashboard para modulos
+
+O dashboard nao participa do consenso nem do despacho. Ele apenas consulta os modulos periodicamente:
+
+- brokers: `GET /state`;
+- drones: `GET /status`;
+- controles: `POST /control`;
+- ocorrencia manual: `POST /request-drone`.
+
+Se algum broker ou drone nao responder, o dashboard mostra o modulo como offline, mas isso nao para o restante do sistema.
+
+### Resumo por falha
+
+| Falha | Efeito imediato | Recuperacao |
+| --- | --- | --- |
+| Sensor desconectado | novos eventos daquela area param de chegar | quando volta, o loop envia novos eventos |
+| Broker desconectado | sua area para de aceitar sensor/claims/callbacks | quando volta, volta a responder HTTP |
+| Peer broker fora | replicacao/claim para ele falha | proximas chamadas tentam novamente |
+| Drone ou base fora | broker ignora esse drone na escolha | quando `/status` voltar, ele entra de novo na lista |
+| Drone cai durante missao | resultado nao chega | broker replaneja apos `MISSION_TIMEOUT_SECONDS` |
+| Dashboard fora | apenas a visualizacao para | sistema continua operando |
 
 ## Requisitos
 
@@ -86,61 +185,43 @@ Servicos expostos na maquina:
 
 ## Rodando em multiplos computadores
 
-A aplicacao ja foi desenhada como um sistema distribuido: brokers, sensores e drones sao processos independentes que conversam por HTTP. Para executar em varias maquinas, cada componente precisa anunciar um endereco acessivel pelos outros computadores da rede, em vez dos nomes internos do Docker como `broker-a` ou `drone-base-1`.
+A topologia distribuida pronta fica em `docker-compose.cluster.yml` e nos arquivos `examples/pc-envs`.
 
-Regras de configuracao:
+Antes de rodar em PCs diferentes, edite os IPs no topo de `examples/pc-envs/pc1.env`, `examples/pc-envs/pc2.env` e `examples/pc-envs/pc3.env`:
 
-- `PUBLIC_URL` deve ser a URL publica do broker na rede local, por exemplo `http://192.168.0.10:8001`.
-- `PEERS` deve listar os demais brokers usando IP/porta acessiveis pela rede.
-- `DRONES` deve listar todas as bases de drones usando IP/porta acessiveis pela rede.
-- `BROKER_URL` do sensor deve apontar para o broker que ele alimenta.
-- As portas publicadas no host precisam estar liberadas no firewall entre os computadores.
+```env
+PC1_IP=...
+PC2_IP=...
+PC3_IP=...
+```
 
-Existe um compose generico para subir qualquer subconjunto de componentes:
+Trocar um IP uma vez atualiza todas as URLs de peers, drones e callbacks daquele arquivo.
+
+No PC 1:
 
 ```bash
-docker compose --env-file examples/node-a.env -f docker-compose.distributed.yml --profile broker --profile drone --profile sensor up --build
+docker compose --env-file examples/pc-envs/pc1.env -f docker-compose.cluster.yml up --build
 ```
 
-Em outro computador, rode outro conjunto:
+No PC 2:
 
 ```bash
-docker compose --env-file examples/node-b.env -f docker-compose.distributed.yml --profile broker --profile drone --profile sensor up --build
+docker compose --env-file examples/pc-envs/pc2.env -f docker-compose.cluster.yml up --build
 ```
 
-Os arquivos `examples/node-a.env` e `examples/node-b.env` sao modelos. Troque `192.168.0.10` e `192.168.0.20` pelos IPs reais das maquinas.
-
-Para rodar mais de um broker ou drone no mesmo PC, crie outro arquivo `.env` com IDs e portas diferentes e use outro nome de projeto:
+No PC 3:
 
 ```bash
-docker compose --project-name broker-c --env-file meu-broker-c.env -f docker-compose.distributed.yml --profile broker --profile sensor up --build
-docker compose --project-name drone-3 --env-file meu-drone-3.env -f docker-compose.distributed.yml --profile drone up --build
+docker compose --env-file examples/pc-envs/pc3.env -f docker-compose.cluster.yml up --build
 ```
 
-Isso permite a topologia que o requisito pede: um PC pode rodar um broker e uma base de drones, outro PC pode rodar o restante, ou qualquer outra combinacao.
+Distribuicao:
 
-### Dashboard em topologia distribuida
+- PC 1: `broker-a`, `sensor-a-1`, `drone-base-1`.
+- PC 2: `broker-b`, `broker-c`, `sensor-b-1`, `sensor-c-1`, `drone-base-2`.
+- PC 3: `broker-d`, `broker-e`, `sensor-d-1`, `sensor-e-1`, `drone-base-3`.
 
-O dashboard le `dashboard/config.js`. Para acompanhar uma execucao distribuida, edite as URLs desse arquivo para apontar para os IPs reais dos brokers e drones. Exemplo:
-
-```js
-window.DISTRIBUTED_CONFIG = {
-  brokers: [
-    { id: "broker-a", sensorId: "sensor-a-1", name: "Area 1", label: "Broker A", url: "http://192.168.0.10:8001", x: 18, y: 24 },
-    { id: "broker-b", sensorId: "sensor-b-1", name: "Area 2", label: "Broker B", url: "http://192.168.0.20:8002", x: 48, y: 18 },
-  ],
-  drones: [
-    { id: "drone-base-1", name: "Base 1", droneName: "Drone 1", url: "http://192.168.0.10:9001", x: 24, y: 48 },
-    { id: "drone-base-2", name: "Base 2", droneName: "Drone 2", url: "http://192.168.0.20:9002", x: 52, y: 48 },
-  ],
-};
-```
-
-Depois suba somente a interface, se quiser:
-
-```bash
-docker compose -f docker-compose.distributed.yml --profile dashboard up --build
-```
+As portas `8001` a `8005` e `9001` a `9003` precisam estar liberadas no firewall entre os computadores.
 
 ## Interface grafica
 
@@ -152,7 +233,7 @@ http://localhost:8080
 
 A tela mostra as cinco areas/brokers, as tres bases de drones, fila de ocorrencias, missoes concluidas e permite criar uma ocorrencia critica manualmente por broker. Ela atualiza automaticamente a cada 3 segundos.
 
-Ela tambem inclui um mapa operacional com areas, brokers, sensores, bases e drones. Os controles permitem destruir ou criar novamente qualquer elemento da simulacao. Quando uma base e destruida, o drone que continuou vivo passa a receber comandos da base viva mais proxima; quando a base original volta, o drone volta a obedecer sua propria base.
+Ela tambem inclui um mapa tatico com grade de latitude/longitude, quadrados de area para cada broker, bases, drones em movimento e ocorrencias. Os controles permitem destruir ou criar novamente qualquer elemento da simulacao. Quando uma base e destruida, o drone que continuou vivo passa a receber comandos da base viva mais proxima; quando a base original volta, o drone volta a obedecer sua propria base.
 
 ## Testes manuais
 
@@ -197,7 +278,8 @@ As novas reservas ignoram o drone parado porque `/reserve` falha por timeout/con
 O teste de carga usa somente a biblioteca padrao do Python. Ele sobe cinco brokers e tres bases de drones em portas locais, cria requisicoes concorrentes e valida:
 
 - uma mesma ocorrencia replicada entre setores e despachada apenas uma vez;
-- varias requisicoes concorrentes terminam sem reservar um drone para duas missoes ao mesmo tempo.
+- varias requisicoes concorrentes terminam sem reservar um drone para duas missoes ao mesmo tempo;
+- a escolha do drone prioriza o drone disponivel mais proximo da ocorrencia.
 
 No Windows desta maquina, use o Python embarcado do Codex:
 
@@ -257,6 +339,8 @@ Broker:
 - `PUBLIC_URL`: URL usada pelos pares e drones para callbacks.
 - `PEERS`: lista de brokers pares separada por virgula.
 - `DRONES`: lista de drones conhecidos separada por virgula.
+- `AREA_X`, `AREA_Y`: posicao do centro da area no mapa tatico.
+- `AREA_SIZE`: tamanho do quadrado da area no mapa.
 - `ALERT_THRESHOLD`: severidade minima para gerar requisicao automatica.
 - `CLAIM_TTL_SECONDS`: tempo de validade de um claim.
 - `RETRY_SECONDS`: intervalo de nova tentativa quando nao ha drone disponivel.
@@ -265,6 +349,7 @@ Broker:
 Drone:
 
 - `DRONE_ID`: identificador do drone.
+- `BASE_X`, `BASE_Y`: posicao da base no mapa tatico.
 - `FAIL_RATE`: probabilidade de falha de missao.
 - `MIN_MISSION_SECONDS`: duracao minima de missao.
 - `MAX_MISSION_SECONDS`: duracao maxima de missao.
@@ -274,6 +359,7 @@ Sensor:
 - `SENSOR_ID`: identificador do sensor.
 - `SECTOR_ID`: setor do sensor.
 - `BROKER_URL`: broker para onde os eventos serao enviados.
+- `AREA_X`, `AREA_Y`, `AREA_SIZE`: area onde o sensor pode gerar eventos.
 - `INTERVAL_SECONDS`: intervalo de geracao de eventos.
 
 ## Estrutura
@@ -283,9 +369,13 @@ Sensor:
 |-- Dockerfile
 |-- dashboard
 |   |-- app.js
+|   |-- config.js
 |   |-- index.html
 |   `-- styles.css
+|-- docker-compose.cluster.yml
 |-- docker-compose.yml
+|-- examples
+|   `-- pc-envs
 |-- README.md
 `-- src
     |-- broker.py

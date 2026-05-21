@@ -177,9 +177,11 @@ button:disabled {
   border: 1px solid var(--line);
   border-radius: 8px;
   background:
-    linear-gradient(rgba(226, 244, 247, 0.78), rgba(226, 244, 247, 0.78)),
-    repeating-linear-gradient(0deg, rgba(15, 118, 110, 0.22) 0 1px, transparent 1px 10%),
-    repeating-linear-gradient(90deg, rgba(15, 118, 110, 0.22) 0 1px, transparent 1px 10%),
+    linear-gradient(rgba(230, 248, 248, 0.82), rgba(230, 248, 248, 0.82)),
+    repeating-linear-gradient(0deg, rgba(15, 118, 110, 0.2) 0 1px, transparent 1px 5%),
+    repeating-linear-gradient(90deg, rgba(15, 118, 110, 0.2) 0 1px, transparent 1px 5%),
+    repeating-linear-gradient(0deg, transparent 0 9.8%, rgba(15, 23, 42, 0.16) 9.8% 10%),
+    repeating-linear-gradient(90deg, transparent 0 9.8%, rgba(15, 23, 42, 0.16) 9.8% 10%),
     linear-gradient(135deg, #cce9ef, #edf8f5 48%, #c7e7f0);
 }
 
@@ -194,14 +196,12 @@ button:disabled {
 }
 
 .system-map::after {
-  content: "Q1\aQ2\aQ3\aQ4";
-  white-space: pre;
+  content: "LAT/LON TACTICAL GRID";
   position: absolute;
   inset: 14px auto auto 14px;
   color: rgba(24, 33, 47, 0.42);
   font-size: 0.76rem;
   font-weight: 700;
-  line-height: 1.8;
   letter-spacing: 0;
 }
 
@@ -230,8 +230,54 @@ button:disabled {
   inset: 0;
 }
 
+.geo-label {
+  position: absolute;
+  z-index: 2;
+  padding: 2px 5px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.72);
+  color: rgba(24, 33, 47, 0.68);
+  font-size: 0.68rem;
+  font-weight: 700;
+  pointer-events: none;
+}
+
+.lon-label {
+  bottom: 6px;
+  transform: translateX(-50%);
+}
+
+.lat-label {
+  right: 6px;
+  transform: translateY(-50%);
+}
+
+.map-area {
+  position: absolute;
+  border: 2px solid rgba(15, 118, 110, 0.58);
+  border-radius: 2px;
+  background: rgba(20, 184, 166, 0.12);
+  pointer-events: none;
+  z-index: 1;
+}
+
+.map-area.inactive {
+  border-color: rgba(180, 35, 24, 0.52);
+  background: rgba(180, 35, 24, 0.08);
+}
+
+.map-area span {
+  position: absolute;
+  left: 6px;
+  top: 4px;
+  color: rgba(24, 33, 47, 0.62);
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
 .map-node {
   position: absolute;
+  z-index: 3;
   width: 118px;
   min-height: 64px;
   padding: 8px;
@@ -294,6 +340,7 @@ button:disabled {
   font-size: 0.72rem;
   font-weight: 700;
   white-space: nowrap;
+  font-family: Consolas, "Courier New", monospace;
 }
 
 .drone-marker {

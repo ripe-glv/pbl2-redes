@@ -1,114 +1,147 @@
+x-service: &service
+  build: .
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
+
+x-broker-common: &broker-common
+  <<: *service
+  command: ["python", "broker.py"]
+  environment: &broker-env
+    PORT: 8000
+    DRONES: http://${PC1_IP}:9001,http://${PC2_IP}:9002,http://${PC3_IP}:9003
+    AREA_SIZE: ${AREA_SIZE:-20}
+    ALERT_THRESHOLD: ${ALERT_THRESHOLD:-7}
+    CLAIM_TTL_SECONDS: ${CLAIM_TTL_SECONDS:-10}
+    RETRY_SECONDS: ${RETRY_SECONDS:-3}
+    MISSION_TIMEOUT_SECONDS: ${MISSION_TIMEOUT_SECONDS:-20}
+
+x-sensor-common: &sensor-common
+  <<: *service
+  command: ["python", "sensor.py"]
+  environment: &sensor-env
+    AREA_SIZE: ${AREA_SIZE:-20}
+
+x-drone-common: &drone-common
+  <<: *service
+  command: ["python", "drone.py"]
+  environment: &drone-env
+    PORT: 9000
+    FAIL_RATE: ${FAIL_RATE:-0.12}
+    MIN_MISSION_SECONDS: ${MIN_MISSION_SECONDS:-3}
+    MAX_MISSION_SECONDS: ${MAX_MISSION_SECONDS:-8}
+
 services:
   broker-a:
-    build: .
-    command: ["python", "broker.py"]
+    <<: *broker-common
+    profiles: ["pc1"]
     environment:
+      <<: *broker-env
       BROKER_ID: broker-a
       SECTOR_ID: area-1-north-route
+      PUBLIC_URL: http://${PC1_IP}:8001
+      PEERS: http://${PC2_IP}:8002,http://${PC2_IP}:8003,http://${PC3_IP}:8004,http://${PC3_IP}:8005
       AREA_X: "18"
       AREA_Y: "24"
-      PUBLIC_URL: http://broker-a:8000
-      PEERS: http://broker-b:8000,http://broker-c:8000,http://broker-d:8000,http://broker-e:8000
-      DRONES: http://drone-base-1:9000,http://drone-base-2:9000,http://drone-base-3:9000
     ports:
       - "8001:8000"
 
   broker-b:
-    build: .
-    command: ["python", "broker.py"]
+    <<: *broker-common
+    profiles: ["pc2"]
     environment:
+      <<: *broker-env
       BROKER_ID: broker-b
       SECTOR_ID: area-2-central-route
+      PUBLIC_URL: http://${PC2_IP}:8002
+      PEERS: http://${PC1_IP}:8001,http://${PC2_IP}:8003,http://${PC3_IP}:8004,http://${PC3_IP}:8005
       AREA_X: "48"
       AREA_Y: "18"
-      PUBLIC_URL: http://broker-b:8000
-      PEERS: http://broker-a:8000,http://broker-c:8000,http://broker-d:8000,http://broker-e:8000
-      DRONES: http://drone-base-1:9000,http://drone-base-2:9000,http://drone-base-3:9000
     ports:
       - "8002:8000"
 
   broker-c:
-    build: .
-    command: ["python", "broker.py"]
+    <<: *broker-common
+    profiles: ["pc2"]
     environment:
+      <<: *broker-env
       BROKER_ID: broker-c
       SECTOR_ID: area-3-south-route
+      PUBLIC_URL: http://${PC2_IP}:8003
+      PEERS: http://${PC1_IP}:8001,http://${PC2_IP}:8002,http://${PC3_IP}:8004,http://${PC3_IP}:8005
       AREA_X: "76"
       AREA_Y: "32"
-      PUBLIC_URL: http://broker-c:8000
-      PEERS: http://broker-a:8000,http://broker-b:8000,http://broker-d:8000,http://broker-e:8000
-      DRONES: http://drone-base-1:9000,http://drone-base-2:9000,http://drone-base-3:9000
     ports:
       - "8003:8000"
 
   broker-d:
-    build: .
-    command: ["python", "broker.py"]
+    <<: *broker-common
+    profiles: ["pc3"]
     environment:
+      <<: *broker-env
       BROKER_ID: broker-d
       SECTOR_ID: area-4-east-route
+      PUBLIC_URL: http://${PC3_IP}:8004
+      PEERS: http://${PC1_IP}:8001,http://${PC2_IP}:8002,http://${PC2_IP}:8003,http://${PC3_IP}:8005
       AREA_X: "30"
       AREA_Y: "72"
-      PUBLIC_URL: http://broker-d:8000
-      PEERS: http://broker-a:8000,http://broker-b:8000,http://broker-c:8000,http://broker-e:8000
-      DRONES: http://drone-base-1:9000,http://drone-base-2:9000,http://drone-base-3:9000
     ports:
       - "8004:8000"
 
   broker-e:
-    build: .
-    command: ["python", "broker.py"]
+    <<: *broker-common
+    profiles: ["pc3"]
     environment:
+      <<: *broker-env
       BROKER_ID: broker-e
       SECTOR_ID: area-5-west-route
+      PUBLIC_URL: http://${PC3_IP}:8005
+      PEERS: http://${PC1_IP}:8001,http://${PC2_IP}:8002,http://${PC2_IP}:8003,http://${PC3_IP}:8004
       AREA_X: "68"
       AREA_Y: "76"
-      PUBLIC_URL: http://broker-e:8000
-      PEERS: http://broker-a:8000,http://broker-b:8000,http://broker-c:8000,http://broker-d:8000
-      DRONES: http://drone-base-1:9000,http://drone-base-2:9000,http://drone-base-3:9000
     ports:
       - "8005:8000"
 
   drone-base-1:
-    build: .
-    command: ["python", "drone.py"]
+    <<: *drone-common
+    profiles: ["pc1"]
     environment:
+      <<: *drone-env
       DRONE_ID: drone-base-1
       BASE_ID: drone-base-1
       BASE_X: "24"
       BASE_Y: "48"
-      FAIL_RATE: "0.10"
     ports:
       - "9001:9000"
 
   drone-base-2:
-    build: .
-    command: ["python", "drone.py"]
+    <<: *drone-common
+    profiles: ["pc2"]
     environment:
+      <<: *drone-env
       DRONE_ID: drone-base-2
       BASE_ID: drone-base-2
       BASE_X: "52"
       BASE_Y: "48"
-      FAIL_RATE: "0.20"
     ports:
       - "9002:9000"
 
   drone-base-3:
-    build: .
-    command: ["python", "drone.py"]
+    <<: *drone-common
+    profiles: ["pc3"]
     environment:
+      <<: *drone-env
       DRONE_ID: drone-base-3
       BASE_ID: drone-base-3
       BASE_X: "80"
       BASE_Y: "58"
-      FAIL_RATE: "0.15"
     ports:
       - "9003:9000"
 
   sensor-a-1:
-    build: .
-    command: ["python", "sensor.py"]
+    <<: *sensor-common
+    profiles: ["pc1"]
     environment:
+      <<: *sensor-env
       SENSOR_ID: sensor-a-1
       SECTOR_ID: area-1-north-route
       BROKER_URL: http://broker-a:8000
@@ -119,9 +152,10 @@ services:
       - broker-a
 
   sensor-b-1:
-    build: .
-    command: ["python", "sensor.py"]
+    <<: *sensor-common
+    profiles: ["pc2"]
     environment:
+      <<: *sensor-env
       SENSOR_ID: sensor-b-1
       SECTOR_ID: area-2-central-route
       BROKER_URL: http://broker-b:8000
@@ -132,9 +166,10 @@ services:
       - broker-b
 
   sensor-c-1:
-    build: .
-    command: ["python", "sensor.py"]
+    <<: *sensor-common
+    profiles: ["pc2"]
     environment:
+      <<: *sensor-env
       SENSOR_ID: sensor-c-1
       SECTOR_ID: area-3-south-route
       BROKER_URL: http://broker-c:8000
@@ -145,9 +180,10 @@ services:
       - broker-c
 
   sensor-d-1:
-    build: .
-    command: ["python", "sensor.py"]
+    <<: *sensor-common
+    profiles: ["pc3"]
     environment:
+      <<: *sensor-env
       SENSOR_ID: sensor-d-1
       SECTOR_ID: area-4-east-route
       BROKER_URL: http://broker-d:8000
@@ -158,9 +194,10 @@ services:
       - broker-d
 
   sensor-e-1:
-    build: .
-    command: ["python", "sensor.py"]
+    <<: *sensor-common
+    profiles: ["pc3"]
     environment:
+      <<: *sensor-env
       SENSOR_ID: sensor-e-1
       SECTOR_ID: area-5-west-route
       BROKER_URL: http://broker-e:8000
@@ -171,7 +208,8 @@ services:
       - broker-e
 
   dashboard:
-    build: .
+    <<: *service
     command: ["python", "-m", "http.server", "8080", "--directory", "/app/dashboard"]
+    profiles: ["dashboard"]
     ports:
-      - "8080:8080"
+      - "${DASHBOARD_PORT:-8080}:8080"

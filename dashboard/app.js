@@ -15,6 +15,11 @@ const defaultDrones = [
 const runtimeConfig = window.DISTRIBUTED_CONFIG || {};
 const brokers = Array.isArray(runtimeConfig.brokers) ? runtimeConfig.brokers : defaultBrokers;
 const drones = Array.isArray(runtimeConfig.drones) ? runtimeConfig.drones : defaultDrones;
+const AREA_SIZE = Number(runtimeConfig.areaSize || 20);
+const MAP_LAT_MIN = 24;
+const MAP_LAT_RANGE = 4.8;
+const MAP_LON_MIN = 52;
+const MAP_LON_RANGE = 6.8;
 
 const $ = (selector) => document.querySelector(selector);
 
@@ -55,12 +60,70 @@ function populateBrokerSelect() {
     .join("");
 }
 
+function updateBrokerSelect(brokerResults) {
+  const selected = $("#brokerSelect").value;
+  $("#brokerSelect").innerHTML = brokers
+    .map((broker, index) => {
+      const result = brokerResults[index];
+      const active = result?.ok && result.data.broker_alive && result.data.sensor_alive;
+      return `<option value="${broker.url}" ${active ? "" : "disabled"}>${broker.name} - ${broker.label}${active ? "" : " (inativa)"}</option>`;
+    })
+    .join("");
+  if (brokers.some((broker) => broker.url === selected)) {
+    $("#brokerSelect").value = selected;
+  }
+}
+
 function distance(a, b) {
   return Math.hypot(a.x - b.x, a.y - b.y);
 }
 
 function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value));
+}
+
+function brokerPoint(broker, result = null) {
+  const position = result?.ok ? result.data.position : null;
+  return {
+    x: Number(position?.x ?? broker.x),
+    y: Number(position?.y ?? broker.y),
+  };
+}
+
+function brokerArea(broker, result = null) {
+  const center = brokerPoint(broker, result);
+  const size = Number(result?.ok ? result.data.area_size || AREA_SIZE : broker.areaSize || AREA_SIZE);
+  const half = size / 2;
+  const left = clamp(center.x - half, 0, 100);
+  const top = clamp(center.y - half, 0, 100);
+  return {
+    ...center,
+    left,
+    top,
+    right: clamp(center.x + half, 0, 100),
+    bottom: clamp(center.y + half, 0, 100),
+    width: clamp(center.x + half, 0, 100) - left,
+    height: clamp(center.y + half, 0, 100) - top,
+  };
+}
+
+function mapPointToGeo(point) {
+  return {
+    lat: Number((MAP_LAT_MIN + ((100 - point.y) / 100) * MAP_LAT_RANGE).toFixed(5)),
+    lon: Number((MAP_LON_MIN + (point.x / 100) * MAP_LON_RANGE).toFixed(5)),
+  };
+}
+
+function geoLabel(lat, lon) {
+  return `${Number(lat).toFixed(3)}, ${Number(lon).toFixed(3)}`;
+}
+
+function randomPointInBrokerArea(broker, result = null) {
+  const area = brokerArea(broker, result);
+  return {
+    x: area.left + Math.random() * area.width,
+    y: area.top + Math.random() * area.height,
+  };
 }
 
 function missionToMapPoint(mission) {
@@ -72,8 +135,8 @@ function missionToMapPoint(mission) {
   }
 
   return {
-    x: clamp(((lon - 52) / 6.8) * 100, 5, 95),
-    y: clamp(100 - ((lat - 24) / 4.8) * 100, 5, 95),
+    x: clamp(((lon - MAP_LON_MIN) / MAP_LON_RANGE) * 100, 5, 95),
+    y: clamp(100 - ((lat - MAP_LAT_MIN) / MAP_LAT_RANGE) * 100, 5, 95),
   };
 }
 
@@ -223,23 +286,28 @@ function collectRequests(brokerResults) {
 function renderRequests(requests) {
   const table = $("#requestsTable");
   if (requests.length === 0) {
-    table.innerHTML = `<tr><td colspan="6">Nenhuma ocorrencia ainda.</td></tr>`;
+    table.innerHTML = `<tr><td colspan="7">Nenhuma ocorrencia ainda.</td></tr>`;
     return;
   }
   table.innerHTML = requests
     .slice(0, 18)
-    .map(
-      (request) => `
+    .map((request) => {
+      const lat = request.area?.lat;
+      const lon = request.area?.lon;
+      const coords = Number.isFinite(Number(lat)) && Number.isFinite(Number(lon)) ? geoLabel(lat, lon) : "-";
+      const distance = Number.isFinite(Number(request.assigned_distance)) ? Number(request.assigned_distance).toFixed(1) : "-";
+      return `
         <tr>
           <td><code>${request.request_id.slice(0, 8)}</code></td>
           <td>${request.origin_broker}</td>
           <td>${request.event_type}</td>
           <td>${request.criticality}</td>
+          <td>${coords}</td>
           <td>${statusBadge(request.status)}</td>
-          <td>${request.assigned_drone || "-"}</td>
+          <td>${request.assigned_drone ? `${request.assigned_drone} (${distance})` : "-"}</td>
         </tr>
-      `,
-    )
+      `;
+    })
     .join("");
 }
 
@@ -267,14 +335,24 @@ function renderMap(brokerResults, droneResults) {
   const nodes = $("#mapNodes");
   nodes.innerHTML = "";
   overlay.innerHTML = "";
+  renderGeoGrid(nodes);
 
   brokers.forEach((broker, index) => {
     const result = brokerResults[index];
     const alive = result?.ok && result.data.broker_alive;
     const sensorAlive = result?.ok && result.data.sensor_alive;
+    const active = alive && sensorAlive;
+    const area = brokerArea(broker, result);
+    const point = brokerPoint(broker, result);
     nodes.insertAdjacentHTML(
       "beforeend",
-      `<button class="${pointClass("map-node", "broker-node", alive ? "online" : "destroyed")}" style="left:${broker.x}%; top:${broker.y}%;" data-node="${broker.id}">
+      `<div class="${pointClass("map-area", active ? "active" : "inactive")}" style="left:${area.left}%; top:${area.top}%; width:${area.width}%; height:${area.height}%;">
+        <span>${broker.name}</span>
+      </div>`,
+    );
+    nodes.insertAdjacentHTML(
+      "beforeend",
+      `<button class="${pointClass("map-node", "broker-node", active ? "online" : "destroyed")}" style="left:${point.x}%; top:${point.y}%;" data-node="${broker.id}">
         <span>${broker.name}</span><strong>${broker.label}</strong><em>${sensorAlive ? "sensor online" : "sensor off"}</em>
       </button>`,
     );
@@ -296,10 +374,11 @@ function renderMap(brokerResults, droneResults) {
     }
     if (droneAlive && destination) {
       overlay.insertAdjacentHTML("beforeend", mapLine(commandTarget, destination, "mission-line"));
+      const geo = mapPointToGeo(destination);
       nodes.insertAdjacentHTML(
         "beforeend",
         `<div class="map-target" style="left:${destination.x}%; top:${destination.y}%;">
-          <span>Chamado</span>
+          <span>Chamado ${geoLabel(geo.lat, geo.lon)}</span>
         </div>`,
       );
     }
@@ -318,6 +397,20 @@ function renderMap(brokerResults, droneResults) {
       </div>`,
     );
   });
+}
+
+function renderGeoGrid(container) {
+  const steps = 4;
+  for (let index = 0; index <= steps; index += 1) {
+    const pct = (index / steps) * 100;
+    const lon = MAP_LON_MIN + (pct / 100) * MAP_LON_RANGE;
+    const lat = MAP_LAT_MIN + ((100 - pct) / 100) * MAP_LAT_RANGE;
+    container.insertAdjacentHTML(
+      "beforeend",
+      `<span class="geo-label lon-label" style="left:${pct}%;">${lon.toFixed(2)} lon</span>
+       <span class="geo-label lat-label" style="top:${pct}%;">${lat.toFixed(2)} lat</span>`,
+    );
+  }
 }
 
 function mapLine(from, to, className = "command-line") {
@@ -399,6 +492,7 @@ async function refresh() {
   const droneResults = await fetchDroneResults();
   const requests = collectRequests(brokerResults);
 
+  updateBrokerSelect(brokerResults);
   renderMetrics(brokerResults, droneResults, requests);
   renderMap(brokerResults, droneResults);
   renderControls(brokerResults, droneResults);
@@ -411,11 +505,36 @@ async function refresh() {
 async function createRequest(event) {
   event.preventDefault();
   const brokerUrl = $("#brokerSelect").value;
+  const brokerIndex = brokers.findIndex((broker) => broker.url === brokerUrl);
+  const broker = brokers[brokerIndex];
+
+  if (!broker) {
+    alert("Selecione uma area ativa.");
+    return;
+  }
+
+  let brokerResult;
+  try {
+    const data = await getJson(`${broker.url}/state`);
+    brokerResult = { ok: true, data };
+  } catch {
+    alert("Nao foi possivel criar a ocorrencia: broker sem resposta.");
+    return;
+  }
+
+  if (!brokerResult.data.broker_alive || !brokerResult.data.sensor_alive) {
+    alert("Ocorrencias so podem surgir em areas com broker e sensor ativos.");
+    await refresh();
+    return;
+  }
+
+  const point = randomPointInBrokerArea(broker, brokerResult);
+  const geo = mapPointToGeo(point);
   const payload = {
     event_type: $("#eventType").value,
     criticality: Number($("#criticality").value),
-    lat: Number((24 + Math.random() * 4.8).toFixed(5)),
-    lon: Number((52 + Math.random() * 6.8).toFixed(5)),
+    lat: geo.lat,
+    lon: geo.lon,
   };
 
   try {

@@ -27,6 +27,11 @@ DRONES = [
     ("drone-base-2", "http://127.0.0.1:19102"),
     ("drone-base-3", "http://127.0.0.1:19103"),
 ]
+DRONE_POSITIONS = {
+    "drone-base-1": (12, 82),
+    "drone-base-2": (50, 50),
+    "drone-base-3": (86, 24),
+}
 
 
 def http_json(method: str, url: str, payload: dict[str, Any] | None = None, timeout: float = 2.0) -> dict[str, Any]:
@@ -57,10 +62,13 @@ class DistributedConsistencyTest(unittest.TestCase):
         drone_urls = ",".join(url for _, url in DRONES)
 
         for index, (drone_id, url) in enumerate(DRONES, start=1):
+            base_x, base_y = DRONE_POSITIONS[drone_id]
             env = {
                 **os.environ,
                 "DRONE_ID": drone_id,
                 "PORT": str(19100 + index),
+                "BASE_X": str(base_x),
+                "BASE_Y": str(base_y),
                 "FAIL_RATE": "0",
                 "MIN_MISSION_SECONDS": "0.1",
                 "MAX_MISSION_SECONDS": "0.2",
@@ -82,6 +90,7 @@ class DistributedConsistencyTest(unittest.TestCase):
                 "RETRY_SECONDS": "0.2",
                 "CLAIM_TTL_SECONDS": "1",
                 "MISSION_TIMEOUT_SECONDS": "3",
+                "AREA_SIZE": "100",
             }
             cls.processes.append(
                 subprocess.Popen([sys.executable, "broker.py"], cwd=SRC, env=env, stdout=subprocess.DEVNULL)
@@ -89,6 +98,15 @@ class DistributedConsistencyTest(unittest.TestCase):
 
         for _, url in DRONES:
             wait_for(f"{url}/health")
+
+    def wait_for_idle_drones(self, timeout: float = 5.0) -> None:
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            statuses = [http_json("GET", f"{url}/status") for _, url in DRONES]
+            if all(status["status"] == "idle" for status in statuses):
+                return
+            time.sleep(0.1)
+        self.fail(f"drones did not become idle: {statuses}")
         for _, _, url in BROKERS:
             wait_for(f"{url}/health")
 
@@ -179,6 +197,33 @@ class DistributedConsistencyTest(unittest.TestCase):
         for _, url in DRONES:
             status = http_json("GET", f"{url}/status")
             self.assertIn(status["status"], {"idle", "busy"})
+
+    def test_nearest_available_drone_is_selected(self) -> None:
+        self.wait_for_idle_drones()
+        request_id = "nearest-drone-selection-test"
+        payload = {
+            "request_id": request_id,
+            "event_type": "urgent_visual_inspection",
+            "criticality": 10,
+            "lat": 27.45,
+            "lon": 57.85,
+        }
+
+        http_json("POST", "http://127.0.0.1:18101/request-drone", payload)
+
+        deadline = time.time() + 8
+        origin_request: dict[str, Any] | None = None
+        while time.time() < deadline:
+            state = http_json("GET", "http://127.0.0.1:18101/state")
+            origin_request = state["requests"].get(request_id)
+            if origin_request and origin_request.get("status") == "completed":
+                break
+            time.sleep(0.2)
+
+        self.assertIsNotNone(origin_request)
+        self.assertEqual(origin_request["status"], "completed")
+        self.assertEqual(origin_request.get("assigned_drone"), "drone-base-3")
+        self.assertIsInstance(origin_request.get("assigned_distance"), float)
 
     def test_destroyed_base_reroutes_living_drone_to_nearest_base(self) -> None:
         target = DRONES[0]

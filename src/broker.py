@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import heapq
+import math
 import os
 import threading
 import time
@@ -17,12 +18,60 @@ PORT = int(os.getenv("PORT", "8000"))
 PUBLIC_URL = os.getenv("PUBLIC_URL", f"http://{BROKER_ID}:{PORT}")
 AREA_X = float(os.getenv("AREA_X", "50"))
 AREA_Y = float(os.getenv("AREA_Y", "50"))
+AREA_SIZE = float(os.getenv("AREA_SIZE", "20"))
 PEERS = env_list("PEERS")
 DRONES = env_list("DRONES")
 ALERT_THRESHOLD = int(os.getenv("ALERT_THRESHOLD", "7"))
 CLAIM_TTL_SECONDS = float(os.getenv("CLAIM_TTL_SECONDS", "10"))
 RETRY_SECONDS = float(os.getenv("RETRY_SECONDS", "3"))
 MISSION_TIMEOUT_SECONDS = float(os.getenv("MISSION_TIMEOUT_SECONDS", "20"))
+MAP_LAT_MIN = 24.0
+MAP_LAT_RANGE = 4.8
+MAP_LON_MIN = 52.0
+MAP_LON_RANGE = 6.8
+
+
+def clamp(value: float, lower: float, upper: float) -> float:
+    return min(upper, max(lower, value))
+
+
+def map_point_to_geo(x: float, y: float) -> tuple[float, float]:
+    lat = MAP_LAT_MIN + ((100 - y) / 100) * MAP_LAT_RANGE
+    lon = MAP_LON_MIN + (x / 100) * MAP_LON_RANGE
+    return round(lat, 5), round(lon, 5)
+
+
+def geo_to_map_point(lat: float, lon: float) -> tuple[float, float]:
+    x = ((lon - MAP_LON_MIN) / MAP_LON_RANGE) * 100
+    y = 100 - ((lat - MAP_LAT_MIN) / MAP_LAT_RANGE) * 100
+    return x, y
+
+
+def request_map_point(request: dict[str, Any]) -> tuple[float, float]:
+    area = request.get("area") if isinstance(request.get("area"), dict) else {}
+    lat = area.get("lat")
+    lon = area.get("lon")
+    if lat is None or lon is None:
+        return AREA_X, AREA_Y
+    return geo_to_map_point(float(lat), float(lon))
+
+
+def point_distance(left: tuple[float, float], right: tuple[float, float]) -> float:
+    return math.hypot(left[0] - right[0], left[1] - right[1])
+
+
+def clamp_to_local_area(lat: float | None, lon: float | None) -> tuple[float, float]:
+    half = AREA_SIZE / 2
+    min_x = clamp(AREA_X - half, 0, 100)
+    max_x = clamp(AREA_X + half, 0, 100)
+    min_y = clamp(AREA_Y - half, 0, 100)
+    max_y = clamp(AREA_Y + half, 0, 100)
+
+    if lat is None or lon is None:
+        return map_point_to_geo(AREA_X, AREA_Y)
+
+    x, y = geo_to_map_point(float(lat), float(lon))
+    return map_point_to_geo(clamp(x, min_x, max_x), clamp(y, min_y, max_y))
 
 
 class BrokerState:
@@ -56,6 +105,7 @@ class BrokerState:
                 "broker_alive": self.broker_alive,
                 "sensor_alive": self.sensor_alive,
                 "position": {"x": AREA_X, "y": AREA_Y},
+                "area_size": AREA_SIZE,
                 "peers": PEERS,
                 "drones": DRONES,
                 "sensors": self.sensors,
@@ -71,16 +121,22 @@ def build_request(payload: dict[str, Any]) -> dict[str, Any]:
     """Normalize sensor/manual payloads into the request format shared by brokers."""
 
     request_id = str(payload.get("request_id") or payload.get("event_id") or uuid.uuid4())
+    existing_area = payload.get("area") if isinstance(payload.get("area"), dict) else {}
+    lat = payload.get("lat", existing_area.get("lat"))
+    lon = payload.get("lon", existing_area.get("lon"))
+    origin_broker = payload.get("origin_broker", BROKER_ID)
+    if origin_broker == BROKER_ID:
+        lat, lon = clamp_to_local_area(float(lat) if lat is not None else None, float(lon) if lon is not None else None)
     return {
         "request_id": request_id,
-        "origin_broker": payload.get("origin_broker", BROKER_ID),
+        "origin_broker": origin_broker,
         "origin_url": payload.get("origin_url", PUBLIC_URL),
         "sector_id": payload.get("sector_id", SECTOR_ID),
         "criticality": int(payload.get("criticality", payload.get("severity", 5))),
         "event_type": payload.get("event_type", "manual_request"),
         "area": {
-            "lat": payload.get("lat"),
-            "lon": payload.get("lon"),
+            "lat": lat,
+            "lon": lon,
         },
         "created_at_ms": int(payload.get("created_at_ms", payload.get("timestamp_ms", now_ms()))),
         "details": payload,
@@ -147,7 +203,14 @@ def release_origin(request: dict[str, Any], token: str) -> None:
     )
 
 
-def confirm_assignment(request: dict[str, Any], token: str, drone_id: str, drone_url: str, attempt: int) -> None:
+def confirm_assignment(
+    request: dict[str, Any],
+    token: str,
+    drone_id: str,
+    drone_url: str,
+    attempt: int,
+    distance: float | None = None,
+) -> None:
     payload = {
         "request_id": request["request_id"],
         "claim_token": token,
@@ -157,6 +220,7 @@ def confirm_assignment(request: dict[str, Any], token: str, drone_id: str, drone
         "attempt": attempt,
         "assigned_at_ms": now_ms(),
         "mission_deadline_ms": now_ms() + int(MISSION_TIMEOUT_SECONDS * 1000),
+        "assigned_distance": None if distance is None else round(distance, 2),
     }
     if request["origin_broker"] == BROKER_ID:
         apply_assignment(payload)
@@ -176,7 +240,40 @@ def apply_assignment(payload: dict[str, Any]) -> bool:
         stored["attempt"] = int(payload.get("attempt", 1))
         stored["assigned_at_ms"] = payload.get("assigned_at_ms")
         stored["mission_deadline_ms"] = payload.get("mission_deadline_ms")
+        stored["assigned_distance"] = payload.get("assigned_distance")
         return True
+
+
+def is_drone_available(status_payload: dict[str, Any]) -> bool:
+    if not status_payload.get("drone_alive"):
+        return False
+    if status_payload.get("status") != "idle":
+        return False
+    base_id = str(status_payload.get("base_id", ""))
+    command_base = str(status_payload.get("command_base", ""))
+    return bool(status_payload.get("base_alive")) or (command_base and command_base != base_id)
+
+
+def available_drones_by_distance(request: dict[str, Any]) -> list[dict[str, Any]]:
+    target = request_map_point(request)
+    candidates: list[dict[str, Any]] = []
+    for order, drone_url in enumerate(DRONES):
+        status, payload = http_json("GET", f"{drone_url}/status", timeout=1.2)
+        if status != 200 or not is_drone_available(payload):
+            continue
+
+        position = payload.get("position") if isinstance(payload.get("position"), dict) else {}
+        drone_point = (float(position.get("x", 50)), float(position.get("y", 50)))
+        distance = point_distance(target, drone_point)
+        candidates.append(
+            {
+                "url": drone_url,
+                "status": payload,
+                "distance": distance,
+                "order": order,
+            }
+        )
+    return sorted(candidates, key=lambda item: (item["distance"], item["order"]))
 
 
 def try_dispatch(request: dict[str, Any]) -> bool:
@@ -186,7 +283,8 @@ def try_dispatch(request: dict[str, Any]) -> bool:
 
     callback_url = f"{request['origin_url']}/drone-result"
     attempt = int(request.get("attempt", 0)) + 1
-    for drone_url in DRONES:
+    for candidate in available_drones_by_distance(request):
+        drone_url = str(candidate["url"])
         status, payload = http_json(
             "POST",
             f"{drone_url}/reserve",
@@ -202,18 +300,20 @@ def try_dispatch(request: dict[str, Any]) -> bool:
         if status in {200, 202} and payload.get("accepted"):
             now = now_ms()
             deadline = now + int(MISSION_TIMEOUT_SECONDS * 1000)
-            confirm_assignment(request, token, str(payload.get("drone_id", drone_url)), drone_url, attempt)
+            drone_id = str(payload.get("drone_id", drone_url))
+            confirm_assignment(request, token, drone_id, drone_url, attempt, float(candidate["distance"]))
             with state.lock:
                 local = state.requests.get(request["request_id"])
                 if local:
                     local["status"] = "dispatched"
-                    local["assigned_drone"] = payload.get("drone_id", drone_url)
+                    local["assigned_drone"] = drone_id
                     local["assigned_drone_url"] = drone_url
                     local["assigned_by"] = BROKER_ID
                     local["attempt"] = attempt
                     local["assigned_at_ms"] = now
                     local["mission_deadline_ms"] = deadline
-            print(f"[{BROKER_ID}] dispatched {request['request_id']} to {payload.get('drone_id', drone_url)}")
+                    local["assigned_distance"] = round(float(candidate["distance"]), 2)
+            print(f"[{BROKER_ID}] dispatched {request['request_id']} to {drone_id} distance={candidate['distance']:.2f}")
             return True
 
     release_origin(request, token)
@@ -332,6 +432,9 @@ class BrokerHandler(BaseHTTPRequestHandler):
             return
 
         if route.path == "/request-drone":
+            if not sensor_alive:
+                write_json(self, 503, {"error": "area inactive: broker and sensor must be active", "broker_id": BROKER_ID})
+                return
             request = build_request(payload)
             state.enqueue(request)
             threading.Thread(target=forward_to_peers, args=(request,), daemon=True).start()
