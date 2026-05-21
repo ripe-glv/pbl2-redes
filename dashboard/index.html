@@ -20,11 +20,7 @@
         <form id="requestForm" class="request-form">
           <label>
             Broker
-            <select id="brokerSelect" name="broker">
-              <option value="http://localhost:8001">Broker A</option>
-              <option value="http://localhost:8002">Broker B</option>
-              <option value="http://localhost:8003">Broker C</option>
-            </select>
+            <select id="brokerSelect" name="broker"></select>
           </label>
           <label>
             Evento
@@ -47,7 +43,7 @@
       <section class="summary-grid" aria-label="Resumo">
         <div class="metric">
           <span>Brokers online</span>
-          <strong id="onlineBrokers">0/3</strong>
+          <strong id="onlineBrokers">0/5</strong>
         </div>
         <div class="metric">
           <span>Drones livres</span>
@@ -63,6 +59,31 @@
         </div>
       </section>
 
+      <section class="map-section" aria-label="Mapa do sistema distribuido">
+        <div class="section-head">
+          <h2>Mapa operacional</h2>
+        </div>
+        <div id="systemMap" class="system-map">
+          <svg id="mapLinks" class="map-links" aria-hidden="true"></svg>
+          <div id="mapNodes" class="map-nodes"></div>
+        </div>
+      </section>
+
+      <section class="control-section" aria-label="Controle de falhas">
+        <div>
+          <div class="section-head">
+            <h2>Areas, brokers e sensores</h2>
+          </div>
+          <div id="areaControls" class="control-list"></div>
+        </div>
+        <div>
+          <div class="section-head">
+            <h2>Bases e drones</h2>
+          </div>
+          <div id="baseControls" class="control-list"></div>
+        </div>
+      </section>
+
       <section class="split">
         <div>
           <div class="section-head">
@@ -73,7 +94,7 @@
         </div>
         <div>
           <div class="section-head">
-            <h2>Drones</h2>
+            <h2>Bases de drones</h2>
           </div>
           <div id="drones" class="grid"></div>
         </div>

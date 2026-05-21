@@ -4,10 +4,12 @@ services:
     command: ["python", "broker.py"]
     environment:
       BROKER_ID: broker-a
-      SECTOR_ID: north-route
+      SECTOR_ID: area-1-north-route
+      AREA_X: "18"
+      AREA_Y: "24"
       PUBLIC_URL: http://broker-a:8000
-      PEERS: http://broker-b:8000,http://broker-c:8000
-      DRONES: http://drone-1:9000,http://drone-2:9000,http://drone-3:9000
+      PEERS: http://broker-b:8000,http://broker-c:8000,http://broker-d:8000,http://broker-e:8000
+      DRONES: http://drone-base-1:9000,http://drone-base-2:9000,http://drone-base-3:9000
     ports:
       - "8001:8000"
 
@@ -16,10 +18,12 @@ services:
     command: ["python", "broker.py"]
     environment:
       BROKER_ID: broker-b
-      SECTOR_ID: central-route
+      SECTOR_ID: area-2-central-route
+      AREA_X: "48"
+      AREA_Y: "18"
       PUBLIC_URL: http://broker-b:8000
-      PEERS: http://broker-a:8000,http://broker-c:8000
-      DRONES: http://drone-1:9000,http://drone-2:9000,http://drone-3:9000
+      PEERS: http://broker-a:8000,http://broker-c:8000,http://broker-d:8000,http://broker-e:8000
+      DRONES: http://drone-base-1:9000,http://drone-base-2:9000,http://drone-base-3:9000
     ports:
       - "8002:8000"
 
@@ -28,36 +32,75 @@ services:
     command: ["python", "broker.py"]
     environment:
       BROKER_ID: broker-c
-      SECTOR_ID: south-route
+      SECTOR_ID: area-3-south-route
+      AREA_X: "76"
+      AREA_Y: "32"
       PUBLIC_URL: http://broker-c:8000
-      PEERS: http://broker-a:8000,http://broker-b:8000
-      DRONES: http://drone-1:9000,http://drone-2:9000,http://drone-3:9000
+      PEERS: http://broker-a:8000,http://broker-b:8000,http://broker-d:8000,http://broker-e:8000
+      DRONES: http://drone-base-1:9000,http://drone-base-2:9000,http://drone-base-3:9000
     ports:
       - "8003:8000"
 
-  drone-1:
+  broker-d:
+    build: .
+    command: ["python", "broker.py"]
+    environment:
+      BROKER_ID: broker-d
+      SECTOR_ID: area-4-east-route
+      AREA_X: "30"
+      AREA_Y: "72"
+      PUBLIC_URL: http://broker-d:8000
+      PEERS: http://broker-a:8000,http://broker-b:8000,http://broker-c:8000,http://broker-e:8000
+      DRONES: http://drone-base-1:9000,http://drone-base-2:9000,http://drone-base-3:9000
+    ports:
+      - "8004:8000"
+
+  broker-e:
+    build: .
+    command: ["python", "broker.py"]
+    environment:
+      BROKER_ID: broker-e
+      SECTOR_ID: area-5-west-route
+      AREA_X: "68"
+      AREA_Y: "76"
+      PUBLIC_URL: http://broker-e:8000
+      PEERS: http://broker-a:8000,http://broker-b:8000,http://broker-c:8000,http://broker-d:8000
+      DRONES: http://drone-base-1:9000,http://drone-base-2:9000,http://drone-base-3:9000
+    ports:
+      - "8005:8000"
+
+  drone-base-1:
     build: .
     command: ["python", "drone.py"]
     environment:
-      DRONE_ID: drone-1
+      DRONE_ID: drone-base-1
+      BASE_ID: drone-base-1
+      BASE_X: "24"
+      BASE_Y: "48"
       FAIL_RATE: "0.10"
     ports:
       - "9001:9000"
 
-  drone-2:
+  drone-base-2:
     build: .
     command: ["python", "drone.py"]
     environment:
-      DRONE_ID: drone-2
+      DRONE_ID: drone-base-2
+      BASE_ID: drone-base-2
+      BASE_X: "52"
+      BASE_Y: "48"
       FAIL_RATE: "0.20"
     ports:
       - "9002:9000"
 
-  drone-3:
+  drone-base-3:
     build: .
     command: ["python", "drone.py"]
     environment:
-      DRONE_ID: drone-3
+      DRONE_ID: drone-base-3
+      BASE_ID: drone-base-3
+      BASE_X: "80"
+      BASE_Y: "58"
       FAIL_RATE: "0.15"
     ports:
       - "9003:9000"
@@ -67,7 +110,7 @@ services:
     command: ["python", "sensor.py"]
     environment:
       SENSOR_ID: sensor-a-1
-      SECTOR_ID: north-route
+      SECTOR_ID: area-1-north-route
       BROKER_URL: http://broker-a:8000
       INTERVAL_SECONDS: "2"
     depends_on:
@@ -78,7 +121,7 @@ services:
     command: ["python", "sensor.py"]
     environment:
       SENSOR_ID: sensor-b-1
-      SECTOR_ID: central-route
+      SECTOR_ID: area-2-central-route
       BROKER_URL: http://broker-b:8000
       INTERVAL_SECONDS: "2.5"
     depends_on:
@@ -89,11 +132,33 @@ services:
     command: ["python", "sensor.py"]
     environment:
       SENSOR_ID: sensor-c-1
-      SECTOR_ID: south-route
+      SECTOR_ID: area-3-south-route
       BROKER_URL: http://broker-c:8000
       INTERVAL_SECONDS: "3"
     depends_on:
       - broker-c
+
+  sensor-d-1:
+    build: .
+    command: ["python", "sensor.py"]
+    environment:
+      SENSOR_ID: sensor-d-1
+      SECTOR_ID: area-4-east-route
+      BROKER_URL: http://broker-d:8000
+      INTERVAL_SECONDS: "3.5"
+    depends_on:
+      - broker-d
+
+  sensor-e-1:
+    build: .
+    command: ["python", "sensor.py"]
+    environment:
+      SENSOR_ID: sensor-e-1
+      SECTOR_ID: area-5-west-route
+      BROKER_URL: http://broker-e:8000
+      INTERVAL_SECONDS: "4"
+    depends_on:
+      - broker-e
 
   dashboard:
     build: .

@@ -15,20 +15,27 @@ BROKER_ID = os.getenv("BROKER_ID", "broker-a")
 SECTOR_ID = os.getenv("SECTOR_ID", "sector-a")
 PORT = int(os.getenv("PORT", "8000"))
 PUBLIC_URL = os.getenv("PUBLIC_URL", f"http://{BROKER_ID}:{PORT}")
+AREA_X = float(os.getenv("AREA_X", "50"))
+AREA_Y = float(os.getenv("AREA_Y", "50"))
 PEERS = env_list("PEERS")
 DRONES = env_list("DRONES")
 ALERT_THRESHOLD = int(os.getenv("ALERT_THRESHOLD", "7"))
 CLAIM_TTL_SECONDS = float(os.getenv("CLAIM_TTL_SECONDS", "10"))
 RETRY_SECONDS = float(os.getenv("RETRY_SECONDS", "3"))
+MISSION_TIMEOUT_SECONDS = float(os.getenv("MISSION_TIMEOUT_SECONDS", "20"))
 
 
 class BrokerState:
+    """Thread-safe broker memory for sensors, requests and the priority queue."""
+
     def __init__(self) -> None:
         self.lock = threading.RLock()
         self.sensors: dict[str, dict[str, Any]] = {}
         self.requests: dict[str, dict[str, Any]] = {}
         self.queue: list[tuple[int, int, str]] = []
         self.seen_forwarded: set[str] = set()
+        self.broker_alive = True
+        self.sensor_alive = True
 
     def enqueue(self, request: dict[str, Any]) -> None:
         with self.lock:
@@ -46,6 +53,9 @@ class BrokerState:
             return {
                 "broker_id": BROKER_ID,
                 "sector_id": SECTOR_ID,
+                "broker_alive": self.broker_alive,
+                "sensor_alive": self.sensor_alive,
+                "position": {"x": AREA_X, "y": AREA_Y},
                 "peers": PEERS,
                 "drones": DRONES,
                 "sensors": self.sensors,
@@ -58,6 +68,8 @@ state = BrokerState()
 
 
 def build_request(payload: dict[str, Any]) -> dict[str, Any]:
+    """Normalize sensor/manual payloads into the request format shared by brokers."""
+
     request_id = str(payload.get("request_id") or payload.get("event_id") or uuid.uuid4())
     return {
         "request_id": request_id,
@@ -76,6 +88,8 @@ def build_request(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def forward_to_peers(request: dict[str, Any]) -> None:
+    """Replicate a request to peer brokers and rely on their ACK/HTTP status."""
+
     for peer in PEERS:
         http_json("POST", f"{peer}/enqueue-peer", request, timeout=1.5)
 
@@ -105,6 +119,11 @@ def claim_origin(request: dict[str, Any]) -> tuple[bool, str | None]:
     )
     if status == 200 and payload.get("granted"):
         return True, str(payload["claim_token"])
+    if status == 409 and payload.get("reason") in {"completed", "dispatched"}:
+        with state.lock:
+            stored = state.requests.get(request_id)
+            if stored:
+                stored["status"] = str(payload["reason"])
     return False, None
 
 
@@ -128,13 +147,16 @@ def release_origin(request: dict[str, Any], token: str) -> None:
     )
 
 
-def confirm_assignment(request: dict[str, Any], token: str, drone_id: str, drone_url: str) -> None:
+def confirm_assignment(request: dict[str, Any], token: str, drone_id: str, drone_url: str, attempt: int) -> None:
     payload = {
         "request_id": request["request_id"],
         "claim_token": token,
         "assigned_drone": drone_id,
         "assigned_drone_url": drone_url,
         "assigned_by": BROKER_ID,
+        "attempt": attempt,
+        "assigned_at_ms": now_ms(),
+        "mission_deadline_ms": now_ms() + int(MISSION_TIMEOUT_SECONDS * 1000),
     }
     if request["origin_broker"] == BROKER_ID:
         apply_assignment(payload)
@@ -151,6 +173,9 @@ def apply_assignment(payload: dict[str, Any]) -> bool:
         stored["assigned_drone"] = payload.get("assigned_drone")
         stored["assigned_drone_url"] = payload.get("assigned_drone_url")
         stored["assigned_by"] = payload.get("assigned_by")
+        stored["attempt"] = int(payload.get("attempt", 1))
+        stored["assigned_at_ms"] = payload.get("assigned_at_ms")
+        stored["mission_deadline_ms"] = payload.get("mission_deadline_ms")
         return True
 
 
@@ -160,6 +185,7 @@ def try_dispatch(request: dict[str, Any]) -> bool:
         return False
 
     callback_url = f"{request['origin_url']}/drone-result"
+    attempt = int(request.get("attempt", 0)) + 1
     for drone_url in DRONES:
         status, payload = http_json(
             "POST",
@@ -168,17 +194,25 @@ def try_dispatch(request: dict[str, Any]) -> bool:
                 "request_id": request["request_id"],
                 "broker_id": BROKER_ID,
                 "callback_url": callback_url,
-                "mission": request,
+                "attempt": attempt,
+                "mission": {**request, "attempt": attempt},
             },
             timeout=2,
         )
         if status in {200, 202} and payload.get("accepted"):
-            confirm_assignment(request, token, str(payload.get("drone_id", drone_url)), drone_url)
+            now = now_ms()
+            deadline = now + int(MISSION_TIMEOUT_SECONDS * 1000)
+            confirm_assignment(request, token, str(payload.get("drone_id", drone_url)), drone_url, attempt)
             with state.lock:
                 local = state.requests.get(request["request_id"])
                 if local:
                     local["status"] = "dispatched"
                     local["assigned_drone"] = payload.get("drone_id", drone_url)
+                    local["assigned_drone_url"] = drone_url
+                    local["assigned_by"] = BROKER_ID
+                    local["attempt"] = attempt
+                    local["assigned_at_ms"] = now
+                    local["mission_deadline_ms"] = deadline
             print(f"[{BROKER_ID}] dispatched {request['request_id']} to {payload.get('drone_id', drone_url)}")
             return True
 
@@ -186,8 +220,34 @@ def try_dispatch(request: dict[str, Any]) -> bool:
     return False
 
 
+def recover_timed_out_assignments() -> None:
+    """Return stale dispatched requests to the queue when a drone never calls back."""
+
+    current_ms = now_ms()
+    with state.lock:
+        for request_id, request in list(state.requests.items()):
+            if request.get("status") != "dispatched" or request.get("origin_broker") != BROKER_ID:
+                continue
+            deadline = int(request.get("mission_deadline_ms") or 0)
+            if deadline <= 0 or deadline > current_ms:
+                continue
+            request["status"] = "failed"
+            request["last_result"] = {
+                "request_id": request_id,
+                "status": "timeout",
+                "reason": "mission callback deadline exceeded",
+                "attempt": request.get("attempt", 0),
+            }
+            request.pop("assigned_drone", None)
+            request.pop("assigned_drone_url", None)
+            request.pop("mission_deadline_ms", None)
+            state.enqueue(request)
+            print(f"[{BROKER_ID}] requeued {request_id} after mission timeout")
+
+
 def scheduler_loop() -> None:
     while True:
+        recover_timed_out_assignments()
         request: dict[str, Any] | None = None
         with state.lock:
             while state.queue:
@@ -217,7 +277,9 @@ class BrokerHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         route = route_for(self)
         if route.path == "/health":
-            write_json(self, 200, {"ok": True, "broker_id": BROKER_ID, "sector_id": SECTOR_ID})
+            with state.lock:
+                alive = state.broker_alive
+            write_json(self, 200 if alive else 503, {"ok": alive, "broker_id": BROKER_ID, "sector_id": SECTOR_ID})
             return
         if route.path == "/state":
             write_json(self, 200, state.snapshot())
@@ -228,7 +290,35 @@ class BrokerHandler(BaseHTTPRequestHandler):
         route = route_for(self)
         payload = read_json(self)
 
+        if route.path == "/control":
+            target = str(payload.get("target", "broker"))
+            action = str(payload.get("action", "restore"))
+            alive = action not in {"destroy", "down", "offline"}
+            with state.lock:
+                if target == "broker":
+                    state.broker_alive = alive
+                    if not alive:
+                        state.queue.clear()
+                elif target == "sensor":
+                    state.sensor_alive = alive
+                else:
+                    write_json(self, 400, {"updated": False, "error": "target must be broker or sensor"})
+                    return
+            write_json(self, 200, {"updated": True, "target": target, "alive": alive, "state": state.snapshot()})
+            return
+
+        with state.lock:
+            broker_alive = state.broker_alive
+            sensor_alive = state.sensor_alive
+
+        if not broker_alive:
+            write_json(self, 503, {"error": "broker destroyed", "broker_id": BROKER_ID})
+            return
+
         if route.path == "/sensor":
+            if not sensor_alive:
+                write_json(self, 503, {"error": "sensor destroyed", "broker_id": BROKER_ID})
+                return
             sensor_id = str(payload.get("sensor_id", "unknown"))
             with state.lock:
                 state.sensors[sensor_id] = payload
@@ -264,8 +354,11 @@ class BrokerHandler(BaseHTTPRequestHandler):
             helper = str(payload.get("helper_broker", "unknown"))
             with state.lock:
                 stored = state.requests.get(request_id)
-                if not stored or stored.get("status") in {"dispatched", "completed"}:
-                    write_json(self, 409, {"granted": False})
+                if not stored:
+                    write_json(self, 409, {"granted": False, "reason": "not_found"})
+                    return
+                if stored.get("status") in {"dispatched", "completed"}:
+                    write_json(self, 409, {"granted": False, "reason": stored.get("status")})
                     return
                 claim_expires_at = float(stored.get("claim_expires_at", 0))
                 if stored.get("status") == "claimed" and claim_expires_at > time.time():
@@ -303,12 +396,23 @@ class BrokerHandler(BaseHTTPRequestHandler):
             with state.lock:
                 stored = state.requests.get(request_id)
                 if stored:
+                    result_attempt = payload.get("attempt")
+                    current_attempt = stored.get("attempt")
+                    if result_attempt is not None and current_attempt is not None and int(result_attempt) != int(current_attempt):
+                        write_json(self, 409, {"received": False, "reason": "stale_attempt"})
+                        return
                     stored["last_result"] = payload
                     if payload.get("status") == "completed":
                         stored["status"] = "completed"
+                        stored.pop("claim_token", None)
+                        stored.pop("claim_owner", None)
+                        stored.pop("claim_expires_at", None)
+                        stored.pop("mission_deadline_ms", None)
                     else:
                         stored["status"] = "failed"
                         stored.pop("assigned_drone", None)
+                        stored.pop("assigned_drone_url", None)
+                        stored.pop("mission_deadline_ms", None)
                         state.enqueue(stored)
             write_json(self, 200, {"received": True})
             return

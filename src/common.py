@@ -12,6 +12,8 @@ from urllib.parse import urlparse
 
 
 def env_list(name: str, default: str = "") -> list[str]:
+    """Read a comma-separated environment variable as a clean list."""
+
     value = os.getenv(name, default)
     return [item.strip() for item in value.split(",") if item.strip()]
 
@@ -21,6 +23,8 @@ def now_ms() -> int:
 
 
 def read_json(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
+    """Decode an HTTP request body as JSON, returning an empty object for no body."""
+
     length = int(handler.headers.get("content-length", "0"))
     if length == 0:
         return {}
@@ -29,6 +33,8 @@ def read_json(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
 
 
 def write_json(handler: BaseHTTPRequestHandler, status: int, payload: dict[str, Any]) -> None:
+    """Write a JSON response with the CORS headers used by the dashboard."""
+
     body = json.dumps(payload, indent=2, sort_keys=True).encode("utf-8")
     handler.send_response(status)
     handler.send_header("content-type", "application/json")
@@ -54,6 +60,8 @@ def http_json(
     payload: dict[str, Any] | None = None,
     timeout: float = 2.0,
 ) -> tuple[int, dict[str, Any]]:
+    """Call another component over HTTP and return status plus parsed JSON payload."""
+
     data = None if payload is None else json.dumps(payload).encode("utf-8")
     headers = {"content-type": "application/json"}
     request = urllib.request.Request(url, data=data, headers=headers, method=method)
