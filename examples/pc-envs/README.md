@@ -58,6 +58,12 @@ docker compose --env-file examples/pc-envs/pc3.env -f docker-compose.cluster.yml
 - PC 2: `broker-b`, `broker-c`, `sensor-b-1`, `sensor-c-1`, `drone-base-2`.
 - PC 3: `broker-d`, `broker-e`, `sensor-d-1`, `sensor-e-1`, `drone-base-3`.
 
+O dashboard sobe junto no PC 1 e consulta os servicos nos tres IPs configurados. Acesse:
+
+```text
+http://172.16.103.8:8080
+```
+
 Para parar em cada PC:
 
 ```bash
