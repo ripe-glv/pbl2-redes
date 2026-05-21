@@ -61,7 +61,7 @@ docker compose --env-file examples/pc-envs/pc3.env -f docker-compose.cluster.yml
 O dashboard sobe junto no PC 1 e consulta os servicos nos tres IPs configurados. Acesse:
 
 ```text
-http://172.16.103.8:8080
+http://172.16.103.7:8085
 ```
 
 Para parar em cada PC:
