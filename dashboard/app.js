@@ -1,4 +1,4 @@
-const brokers = [
+const defaultBrokers = [
   { id: "broker-a", sensorId: "sensor-a-1", name: "Area 1", label: "Broker A", url: "http://localhost:8001", x: 18, y: 24 },
   { id: "broker-b", sensorId: "sensor-b-1", name: "Area 2", label: "Broker B", url: "http://localhost:8002", x: 48, y: 18 },
   { id: "broker-c", sensorId: "sensor-c-1", name: "Area 3", label: "Broker C", url: "http://localhost:8003", x: 76, y: 32 },
@@ -6,11 +6,15 @@ const brokers = [
   { id: "broker-e", sensorId: "sensor-e-1", name: "Area 5", label: "Broker E", url: "http://localhost:8005", x: 68, y: 76 },
 ];
 
-const drones = [
+const defaultDrones = [
   { id: "drone-base-1", name: "Base 1", droneName: "Drone 1", url: "http://localhost:9001", x: 24, y: 48 },
   { id: "drone-base-2", name: "Base 2", droneName: "Drone 2", url: "http://localhost:9002", x: 52, y: 48 },
   { id: "drone-base-3", name: "Base 3", droneName: "Drone 3", url: "http://localhost:9003", x: 80, y: 58 },
 ];
+
+const runtimeConfig = window.DISTRIBUTED_CONFIG || {};
+const brokers = Array.isArray(runtimeConfig.brokers) ? runtimeConfig.brokers : defaultBrokers;
+const drones = Array.isArray(runtimeConfig.drones) ? runtimeConfig.drones : defaultDrones;
 
 const $ = (selector) => document.querySelector(selector);
 

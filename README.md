@@ -84,6 +84,64 @@ Servicos expostos na maquina:
 - Base de drone 3: `http://localhost:9003`
 - Interface grafica: `http://localhost:8080`
 
+## Rodando em multiplos computadores
+
+A aplicacao ja foi desenhada como um sistema distribuido: brokers, sensores e drones sao processos independentes que conversam por HTTP. Para executar em varias maquinas, cada componente precisa anunciar um endereco acessivel pelos outros computadores da rede, em vez dos nomes internos do Docker como `broker-a` ou `drone-base-1`.
+
+Regras de configuracao:
+
+- `PUBLIC_URL` deve ser a URL publica do broker na rede local, por exemplo `http://192.168.0.10:8001`.
+- `PEERS` deve listar os demais brokers usando IP/porta acessiveis pela rede.
+- `DRONES` deve listar todas as bases de drones usando IP/porta acessiveis pela rede.
+- `BROKER_URL` do sensor deve apontar para o broker que ele alimenta.
+- As portas publicadas no host precisam estar liberadas no firewall entre os computadores.
+
+Existe um compose generico para subir qualquer subconjunto de componentes:
+
+```bash
+docker compose --env-file examples/node-a.env -f docker-compose.distributed.yml --profile broker --profile drone --profile sensor up --build
+```
+
+Em outro computador, rode outro conjunto:
+
+```bash
+docker compose --env-file examples/node-b.env -f docker-compose.distributed.yml --profile broker --profile drone --profile sensor up --build
+```
+
+Os arquivos `examples/node-a.env` e `examples/node-b.env` sao modelos. Troque `192.168.0.10` e `192.168.0.20` pelos IPs reais das maquinas.
+
+Para rodar mais de um broker ou drone no mesmo PC, crie outro arquivo `.env` com IDs e portas diferentes e use outro nome de projeto:
+
+```bash
+docker compose --project-name broker-c --env-file meu-broker-c.env -f docker-compose.distributed.yml --profile broker --profile sensor up --build
+docker compose --project-name drone-3 --env-file meu-drone-3.env -f docker-compose.distributed.yml --profile drone up --build
+```
+
+Isso permite a topologia que o requisito pede: um PC pode rodar um broker e uma base de drones, outro PC pode rodar o restante, ou qualquer outra combinacao.
+
+### Dashboard em topologia distribuida
+
+O dashboard le `dashboard/config.js`. Para acompanhar uma execucao distribuida, edite as URLs desse arquivo para apontar para os IPs reais dos brokers e drones. Exemplo:
+
+```js
+window.DISTRIBUTED_CONFIG = {
+  brokers: [
+    { id: "broker-a", sensorId: "sensor-a-1", name: "Area 1", label: "Broker A", url: "http://192.168.0.10:8001", x: 18, y: 24 },
+    { id: "broker-b", sensorId: "sensor-b-1", name: "Area 2", label: "Broker B", url: "http://192.168.0.20:8002", x: 48, y: 18 },
+  ],
+  drones: [
+    { id: "drone-base-1", name: "Base 1", droneName: "Drone 1", url: "http://192.168.0.10:9001", x: 24, y: 48 },
+    { id: "drone-base-2", name: "Base 2", droneName: "Drone 2", url: "http://192.168.0.20:9002", x: 52, y: 48 },
+  ],
+};
+```
+
+Depois suba somente a interface, se quiser:
+
+```bash
+docker compose -f docker-compose.distributed.yml --profile dashboard up --build
+```
+
 ## Interface grafica
 
 Depois de subir o Compose, abra:
